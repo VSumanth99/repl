@@ -13,6 +13,8 @@ namespace REPL
 
 structure CommandOptions where
   allTactics : Option Bool := none
+  /-- Export source-level tactic sequences with their proof states. -/
+  tacticSequences : Option Bool := none
   /--
   Should be "full", "tactics", "original", or "substantive".
   Anything else is ignored.
@@ -115,6 +117,26 @@ def Tactic.of (goals tactic : String) (pos endPos : Lean.Position) (proofState :
     proofState,
     usedConstants }
 
+/-- One tactic in a source-level tactic sequence. -/
+structure TacticSequenceEntry where
+  name : Option Name
+  pos : Pos
+  endPos : Pos
+  goalsBefore : List String
+  goalsAfter : List String
+  tactic : String
+  mayFail : Bool
+deriving ToJson, FromJson
+
+/-- A source tactic sequence and the syntax container that owns it. -/
+structure TacticSequence where
+  name : Name
+  synthetic : Bool
+  pos : Pos
+  endPos : Pos
+  tactics : List TacticSequenceEntry
+deriving ToJson, FromJson
+
 /--
 A response to a Lean command.
 `env` can be used in later calls, to build on the stored environment.
@@ -124,6 +146,7 @@ structure CommandResponse where
   messages : List Message := []
   sorries : List Sorry := []
   tactics : List Tactic := []
+  tacticSequences : List TacticSequence := []
   infotree : Option Json := none
 deriving FromJson
 
@@ -137,6 +160,7 @@ instance : ToJson CommandResponse where
     Json.nonemptyList "messages" r.messages,
     Json.nonemptyList "sorries" r.sorries,
     Json.nonemptyList "tactics" r.tactics,
+    Json.nonemptyList "tacticSequences" r.tacticSequences,
     match r.infotree with | some j => [("infotree", j)] | none => []
   ]
 

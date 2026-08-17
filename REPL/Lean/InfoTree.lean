@@ -228,6 +228,107 @@ def tactics (t : InfoTree) : List (ContextInfo × Syntax × List MVarId × Posit
       i.getUsedConstantsAsSet.toArray )
 
 
+/-- One source tactic discovered while reconstructing a tactic sequence. -/
+structure TacticSequenceNode where
+  ctx : ContextInfo
+  info : TacticInfo
+  /-- Whether a surrounding combinator permits this tactic to fail. -/
+  mayFail : Bool := false
+
+/--
+A source-level tactic sequence together with the syntax node that owns it.
+
+Keeping the sequence container is a small extension over mathlib's
+`Mathlib.TacticAnalysis.findTacticSeqs`: it preserves the range of an enclosing
+`by`, bullet body, or tactic-sequence node for clients that need to reconstruct
+nesting without guessing from indentation.
+-/
+structure TacticSequence where
+  ctx : ContextInfo
+  stx : Syntax
+  tactics : List TacticSequenceNode
+
+private structure TacticSequenceVisitResult where
+  tactic? : Option TacticSequenceNode := none
+  sequences : List TacticSequence := []
+deriving Inhabited
+
+private def isTacticSequenceKind (kind : Name) : Bool :=
+  kind == ``Lean.Parser.Tactic.tacticSeq ||
+  kind == ``Lean.Parser.Tactic.tacticSeq1Indented ||
+  kind == ``Lean.Parser.Term.byTactic
+
+private def isTacticPunctuationKind (kind : Name) : Bool :=
+  kind == `«;» ||
+  kind == `Lean.cdotTk ||
+  kind == `«]» ||
+  kind == nullKind ||
+  kind == `«by»
+
+private def allowsChildFailure (kind : Name) : Bool :=
+  kind == ``Lean.Parser.Tactic.tacticTry_ ||
+  kind == ``Lean.Parser.Tactic.anyGoals
+
+private def markSequenceMayFail (sequence : TacticSequence) : TacticSequence :=
+  { sequence with
+    tactics := sequence.tactics.map fun tactic => { tactic with mayFail := true } }
+
+/--
+Traverse an infotree and recover source tactic sequences.
+
+This follows the traversal used by mathlib's
+`Mathlib.TacticAnalysis.findTacticSeqs`, adapted to Lean 4.15 and extended to
+retain each sequence container's syntax range.
+-/
+private partial def collectTacticSequences
+    (tree : InfoTree) (ctx? : Option ContextInfo) : TacticSequenceVisitResult :=
+  match tree with
+  | .context ctx tree =>
+    collectTacticSequences tree (ctx.mergeIntoOuter? ctx?)
+  | .hole _ =>
+    {}
+  | .node info children =>
+    let childResults := children.toList.map fun child => collectTacticSequences child ctx?
+    let childTactics := childResults.filterMap (fun result => result.tactic?)
+    let childSequences := childResults.flatMap (fun result => result.sequences)
+    match info.stx?, ctx? with
+    | some stx, some ctx =>
+      let kind := stx.getKind
+      if isTacticSequenceKind kind then
+        let sequences :=
+          if childTactics.isEmpty && kind == ``Lean.Parser.Term.byTactic then
+            match childSequences.reverse with
+            | [] => []
+            | sequence :: preceding => preceding.reverse ++ [{ sequence with ctx, stx }]
+          else if childTactics.isEmpty then childSequences
+          else childSequences ++ [{ ctx, stx, tactics := childTactics }]
+        { sequences }
+      else
+        match stx.getHeadInfo? with
+        | some (.original ..) =>
+          if isTacticPunctuationKind kind then
+            { sequences := childSequences }
+          else if kind == ``Lean.Parser.Tactic.withAnnotateState then
+            { tactic? := childTactics.head?, sequences := childSequences }
+          else
+            match info with
+            | .ofTacticInfo tacticInfo =>
+              let sequences :=
+                if allowsChildFailure kind then childSequences.map markSequenceMayFail
+                else childSequences
+              { tactic? := some { ctx, info := tacticInfo }, sequences }
+            | _ =>
+              { sequences := childSequences }
+        | _ =>
+          { sequences := childSequences }
+    | _, _ =>
+      { sequences := childSequences }
+
+/-- Return all source-level tactic sequences contained in an infotree. -/
+def tacticSequences (tree : InfoTree) : List TacticSequence :=
+  (collectTacticSequences tree none).sequences
+
+
 end Lean.Elab.InfoTree
 
 namespace Lean.Elab.TacticInfo

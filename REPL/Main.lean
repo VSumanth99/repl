@@ -125,6 +125,27 @@ def tactics (trees : List InfoTree) : M m (List Tactic) :=
       let proofStateId ← proofState.mapM recordProofSnapshot
       return Tactic.of goals tactic pos endPos proofStateId ns
 
+/-- Serialize source-level tactic sequences and their before/after proof states. -/
+def tacticSequences (trees : List InfoTree) : M m (List REPL.TacticSequence) :=
+  trees.flatMap InfoTree.tacticSequences |>.mapM fun sequence => do
+    let (pos, endPos) := stxRange sequence.ctx.fileMap sequence.stx
+    let tactics ← sequence.tactics.mapM fun tactic => do
+      let (tacticPos, tacticEndPos) := tactic.info.range tactic.ctx
+      return {
+        name := tactic.info.name?
+        pos := ⟨tacticPos.line, tacticPos.column⟩
+        endPos := ⟨tacticEndPos.line, tacticEndPos.column⟩
+        goalsBefore := (← tactic.info.goalState tactic.ctx).map Format.pretty
+        goalsAfter := (← tactic.info.goalStateAfter tactic.ctx).map Format.pretty
+        tactic := Format.pretty (← tactic.info.pp tactic.ctx)
+        mayFail := tactic.mayFail }
+    return {
+      name := sequence.stx.getKind
+      synthetic := match sequence.stx.getHeadInfo with | .original .. => false | _ => true
+      pos := ⟨pos.line, pos.column⟩
+      endPos := ⟨endPos.line, endPos.column⟩
+      tactics }
+
 /-- Record a `ProofSnapshot` and generate a JSON response for it. -/
 def createProofStepReponse (proofState : ProofSnapshot) (old? : Option ProofSnapshot := none) :
     M m ProofStepResponse := do
@@ -207,6 +228,9 @@ def runCommand (s : Command) : M IO (CommandResponse ⊕ Error) := do
   let tactics ← match s.allTactics with
   | some true => tactics trees
   | _ => pure []
+  let tacticSequences ← match s.tacticSequences with
+  | some true => tacticSequences trees
+  | _ => pure []
   let cmdSnapshot :=
   { cmdState
     cmdContext := (cmdSnapshot?.map fun c => c.cmdContext).getD
@@ -231,6 +255,7 @@ def runCommand (s : Command) : M IO (CommandResponse ⊕ Error) := do
       messages,
       sorries,
       tactics
+      tacticSequences
       infotree }
 
 def processFile (s : File) : M IO (CommandResponse ⊕ Error) := do
