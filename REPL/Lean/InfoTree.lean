@@ -248,6 +248,18 @@ structure TacticSequence where
   stx : Syntax
   tactics : List TacticSequenceNode
 
+/-- One parsed source step in a `calc` block. -/
+structure CalcStep where
+  stx : Syntax
+  proof? : Option Syntax
+
+/-- A parsed `calc` block and its nearest enclosing tactic. -/
+structure CalcBlock where
+  ctx : ContextInfo
+  stx : Syntax
+  owner? : Option Syntax
+  steps : List CalcStep
+
 private structure TacticSequenceVisitResult where
   tactic? : Option TacticSequenceNode := none
   sequences : List TacticSequence := []
@@ -327,6 +339,54 @@ private partial def collectTacticSequences
 /-- Return all source-level tactic sequences contained in an infotree. -/
 def tacticSequences (tree : InfoTree) : List TacticSequence :=
   (collectTacticSequences tree none).sequences
+
+private def unpackCalcSteps (steps : TSyntax ``Lean.calcSteps) : Option (List CalcStep) :=
+  match steps with
+  | `(calcSteps|
+      $step0:calcFirstStep
+      $rest*) =>
+    let first? := match step0 with
+      | `(calcFirstStep| $_:term := $proof:term) => some { stx := step0, proof? := some proof }
+      | `(calcFirstStep| $_:term) => some { stx := step0, proof? := none }
+      | _ => none
+    let rest := rest.toList.filterMap fun (step : TSyntax ``Lean.calcStep) =>
+      match step with
+      | `(calcStep| $_:term := $proof:term) => some { stx := step.raw, proof? := some proof.raw }
+      | _ => none
+    first?.map fun first => first :: rest
+  | _ => none
+
+private def unpackCalc? (stx : Syntax) : Option (List CalcStep) :=
+  match stx with
+  | `(term| calc $steps:calcSteps) => unpackCalcSteps steps
+  | `(tactic| calc $steps:calcSteps) => unpackCalcSteps steps
+  | _ => none
+
+/-- Traverse an infotree and recover original term- and tactic-level `calc` blocks. -/
+private partial def collectCalcBlocks
+    (tree : InfoTree) (ctx? : Option ContextInfo) (owner? : Option Syntax) : List CalcBlock :=
+  match tree with
+  | .context ctx tree =>
+    collectCalcBlocks tree (ctx.mergeIntoOuter? ctx?) owner?
+  | .hole _ =>
+    []
+  | .node info children =>
+    let owner? := match info with
+      | .ofTacticInfo tacticInfo => some tacticInfo.stx
+      | _ => owner?
+    let childBlocks := children.toList.flatMap fun child =>
+      collectCalcBlocks child ctx? owner?
+    match info.stx?, ctx? with
+    | some stx, some ctx =>
+      match stx.getHeadInfo?, unpackCalc? stx with
+      | some (.original ..), some steps =>
+        childBlocks ++ [{ ctx, stx, owner?, steps }]
+      | _, _ => childBlocks
+    | _, _ => childBlocks
+
+/-- Return all original source `calc` blocks contained in an infotree. -/
+def calcBlocks (tree : InfoTree) : List CalcBlock :=
+  collectCalcBlocks tree none none
 
 
 end Lean.Elab.InfoTree

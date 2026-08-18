@@ -146,6 +146,27 @@ def tacticSequences (trees : List InfoTree) : M m (List REPL.TacticSequence) :=
       endPos := ⟨endPos.line, endPos.column⟩
       tactics }
 
+/-- Serialize source ranges for term- and tactic-level `calc` blocks. -/
+def calcBlocks (trees : List InfoTree) : List REPL.CalcBlock :=
+  trees.flatMap InfoTree.calcBlocks |>.map fun block =>
+    let (pos, endPos) := stxRange block.ctx.fileMap block.stx
+    let ownerRange := block.owner?.map fun owner => stxRange block.ctx.fileMap owner
+    let steps := block.steps.map fun step =>
+      let (stepPos, stepEndPos) := stxRange block.ctx.fileMap step.stx
+      let proofRange := step.proof?.map fun proof => stxRange block.ctx.fileMap proof
+      {
+        pos := ⟨stepPos.line, stepPos.column⟩
+        endPos := ⟨stepEndPos.line, stepEndPos.column⟩
+        proofPos := proofRange.map fun range => ⟨range.1.line, range.1.column⟩
+        proofEndPos := proofRange.map fun range => ⟨range.2.line, range.2.column⟩ }
+    {
+      name := block.stx.getKind
+      pos := ⟨pos.line, pos.column⟩
+      endPos := ⟨endPos.line, endPos.column⟩
+      ownerPos := ownerRange.map fun range => ⟨range.1.line, range.1.column⟩
+      ownerEndPos := ownerRange.map fun range => ⟨range.2.line, range.2.column⟩
+      steps }
+
 /-- Record a `ProofSnapshot` and generate a JSON response for it. -/
 def createProofStepReponse (proofState : ProofSnapshot) (old? : Option ProofSnapshot := none) :
     M m ProofStepResponse := do
@@ -231,6 +252,9 @@ def runCommand (s : Command) : M IO (CommandResponse ⊕ Error) := do
   let tacticSequences ← match s.tacticSequences with
   | some true => tacticSequences trees
   | _ => pure []
+  let calcBlocks := match s.tacticSequences with
+  | some true => calcBlocks trees
+  | _ => []
   let cmdSnapshot :=
   { cmdState
     cmdContext := (cmdSnapshot?.map fun c => c.cmdContext).getD
@@ -256,6 +280,7 @@ def runCommand (s : Command) : M IO (CommandResponse ⊕ Error) := do
       sorries,
       tactics
       tacticSequences
+      calcBlocks
       infotree }
 
 def processFile (s : File) : M IO (CommandResponse ⊕ Error) := do

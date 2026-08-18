@@ -137,6 +137,24 @@ structure TacticSequence where
   tactics : List TacticSequenceEntry
 deriving ToJson, FromJson
 
+/-- One source step in a term- or tactic-level `calc` block. -/
+structure CalcStep where
+  pos : Pos
+  endPos : Pos
+  proofPos : Option Pos
+  proofEndPos : Option Pos
+deriving ToJson, FromJson
+
+/-- Source ranges for a `calc` block and the tactic that owns it, if any. -/
+structure CalcBlock where
+  name : Name
+  pos : Pos
+  endPos : Pos
+  ownerPos : Option Pos
+  ownerEndPos : Option Pos
+  steps : List CalcStep
+deriving ToJson, FromJson
+
 /--
 A response to a Lean command.
 `env` can be used in later calls, to build on the stored environment.
@@ -147,6 +165,7 @@ structure CommandResponse where
   sorries : List Sorry := []
   tactics : List Tactic := []
   tacticSequences : List TacticSequence := []
+  calcBlocks : List CalcBlock := []
   infotree : Option Json := none
 deriving FromJson
 
@@ -161,6 +180,7 @@ instance : ToJson CommandResponse where
     Json.nonemptyList "sorries" r.sorries,
     Json.nonemptyList "tactics" r.tactics,
     Json.nonemptyList "tacticSequences" r.tacticSequences,
+    Json.nonemptyList "calcBlocks" r.calcBlocks,
     match r.infotree with | some j => [("infotree", j)] | none => []
   ]
 
