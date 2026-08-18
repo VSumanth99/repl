@@ -39,3 +39,22 @@
    "data": "!"}],
  "env": 5}
 
+{"messages":
+ [{"severity": "info",
+   "pos": {"line": 1, "column": 23},
+   "endPos": {"line": 1, "column": 27},
+   "data":
+   "[Meta.Tactic.simp.rewrite] f_def:1000, f ==> 37\n[Meta.Tactic.simp.rewrite] eq_self:1000, 37 = 37 ==> True"}],
+ "env": 6,
+ "automationEvents":
+ [{"pos": {"line": 1, "column": 23},
+   "message": "f_def:1000, f ==> 37",
+   "kind": "Meta.Tactic.simp.rewrite",
+   "endPos": {"line": 1, "column": 27},
+   "children": []},
+  {"pos": {"line": 1, "column": 23},
+   "message": "eq_self:1000, 37 = 37 ==> True",
+   "kind": "Meta.Tactic.simp.rewrite",
+   "endPos": {"line": 1, "column": 27},
+   "children": []}]}
+

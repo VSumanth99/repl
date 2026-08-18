@@ -242,6 +242,12 @@ def runCommand (s : Command) : M IO (CommandResponse ⊕ Error) := do
     IO.processInput s.cmd initialCmdState?
   catch ex =>
     return .inr ⟨ex.toString⟩
+  let automationEvents ← match s.automationEvents with
+  | some true => do
+      let eventLists ← messages.mapM fun message =>
+        liftM (AutomationEvent.ofMessage message)
+      pure eventLists.flatten
+  | _ => pure []
   let messages ← messages.mapM fun m => Message.of m
   -- For debugging purposes, sometimes we print out the trees here:
   -- trees.forM fun t => do IO.println (← t.format)
@@ -277,6 +283,7 @@ def runCommand (s : Command) : M IO (CommandResponse ⊕ Error) := do
   return .inl
     { env,
       messages,
+      automationEvents,
       sorries,
       tactics
       tacticSequences

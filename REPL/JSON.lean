@@ -15,6 +15,8 @@ structure CommandOptions where
   allTactics : Option Bool := none
   /-- Export source-level tactic sequences with their proof states. -/
   tacticSequences : Option Bool := none
+  /-- Export enabled Lean traces as structured automation events. -/
+  automationEvents : Option Bool := none
   /--
   Should be "full", "tactics", "original", or "substantive".
   Anything else is ignored.
@@ -71,6 +73,56 @@ def Message.of (m : Lean.Message) : IO Message := do pure <|
     | .warning => .warning
     | .error => .error,
     data := (← m.data.toString).trim }
+
+/-- One structured event emitted by an enabled Lean automation trace. -/
+structure AutomationEvent where
+  kind : Name
+  pos : Pos
+  endPos : Option Pos
+  message : String
+  children : List AutomationEvent := []
+deriving ToJson, FromJson
+
+/--
+Collect trace nodes without parsing their rendered `[trace.class]` prefixes.
+
+Lean stores trace messages as a `MessageData` tree. Formatting a whole message
+flattens that tree into display text, so this traversal runs before formatting
+and preserves each trace class and its child events.
+-/
+private partial def AutomationEvent.fromMessageData
+    (pos : Pos) (endPos : Option Pos) (namingContext : NamingContext)
+    (messageContext : Option MessageDataContext) : MessageData → IO (List AutomationEvent)
+  | .withContext ctx data =>
+      fromMessageData pos endPos namingContext (some ctx) data
+  | .withNamingContext ctx data =>
+      fromMessageData pos endPos ctx messageContext data
+  | .nest _ data | .group data | .tagged _ data | .ofWidget _ data =>
+      fromMessageData pos endPos namingContext messageContext data
+  | .compose left right => do
+      return (← fromMessageData pos endPos namingContext messageContext left) ++
+        (← fromMessageData pos endPos namingContext messageContext right)
+  | .trace traceData header children => do
+      let message := (← MessageData.formatAux namingContext messageContext header).pretty.trim
+      let childEvents ← children.toList.mapM fun child =>
+        fromMessageData pos endPos namingContext messageContext child
+      let children := childEvents.flatten
+      return [{ kind := traceData.cls, pos, endPos, message, children }]
+  | .ofLazy render _ => do
+      let dynamic ← render (messageContext.map (MessageData.mkPPContext namingContext))
+      let some data := dynamic.get? MessageData | return []
+      fromMessageData pos endPos namingContext messageContext data
+  | .ofFormatWithInfos _ | .ofGoal _ =>
+      return []
+
+/-- Extract every structured automation event contained in a Lean message. -/
+def AutomationEvent.ofMessage (message : Lean.Message) : IO (List AutomationEvent) :=
+  fromMessageData
+    ⟨message.pos.line, message.pos.column⟩
+    (message.endPos.map fun pos => ⟨pos.line, pos.column⟩)
+    { currNamespace := Name.anonymous, openDecls := [] }
+    none
+    message.data
 
 /-- A Lean `sorry`. -/
 structure Sorry where
@@ -162,6 +214,7 @@ A response to a Lean command.
 structure CommandResponse where
   env : Nat
   messages : List Message := []
+  automationEvents : List AutomationEvent := []
   sorries : List Sorry := []
   tactics : List Tactic := []
   tacticSequences : List TacticSequence := []
@@ -177,6 +230,7 @@ instance : ToJson CommandResponse where
   toJson r := Json.mkObj <| .flatten [
     [("env", r.env)],
     Json.nonemptyList "messages" r.messages,
+    Json.nonemptyList "automationEvents" r.automationEvents,
     Json.nonemptyList "sorries" r.sorries,
     Json.nonemptyList "tactics" r.tactics,
     Json.nonemptyList "tacticSequences" r.tacticSequences,

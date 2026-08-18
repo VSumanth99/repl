@@ -13,3 +13,5 @@
 {"tactic": "simp", "proofState": 0}
 
 {"cmd": "example : True := by\n  trace \"!\"\n  trivial"}
+
+{"cmd": "example : f = 37 := by simp", "env": 2, "automationEvents": true}
