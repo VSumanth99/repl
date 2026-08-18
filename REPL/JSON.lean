@@ -86,34 +86,53 @@ deriving ToJson, FromJson
 /--
 Collect trace nodes without parsing their rendered `[trace.class]` prefixes.
 
-Lean stores trace messages as a `MessageData` tree. Formatting a whole message
-flattens that tree into display text, so this traversal runs before formatting
-and preserves each trace class and its child events.
+Lean stores trace messages as a `MessageData` tree. `addTraceAsMessages` joins
+the traces at each position with `MessageData.joinSep`, which builds a deep
+`compose` chain whose length is the number of traces at that position. Recursing
+one stack frame per `compose` node overflows the REPL stack on automation-heavy
+proofs, so this traversal flattens the tree with an explicit worklist instead.
 -/
 private partial def AutomationEvent.fromMessageData
     (pos : Pos) (endPos : Option Pos) (namingContext : NamingContext)
     (messageContext : Option MessageDataContext) : MessageData → IO (List AutomationEvent)
-  | .withContext ctx data =>
-      fromMessageData pos endPos namingContext (some ctx) data
-  | .withNamingContext ctx data =>
-      fromMessageData pos endPos ctx messageContext data
-  | .nest _ data | .group data | .tagged _ data | .ofWidget _ data =>
-      fromMessageData pos endPos namingContext messageContext data
-  | .compose left right => do
-      return (← fromMessageData pos endPos namingContext messageContext left) ++
-        (← fromMessageData pos endPos namingContext messageContext right)
-  | .trace traceData header children => do
-      let message := (← MessageData.formatAux namingContext messageContext header).pretty.trim
-      let childEvents ← children.toList.mapM fun child =>
-        fromMessageData pos endPos namingContext messageContext child
-      let children := childEvents.flatten
-      return [{ kind := traceData.cls, pos, endPos, message, children }]
-  | .ofLazy render _ => do
-      let dynamic ← render (messageContext.map (MessageData.mkPPContext namingContext))
-      let some data := dynamic.get? MessageData | return []
-      fromMessageData pos endPos namingContext messageContext data
-  | .ofFormatWithInfos _ | .ofGoal _ =>
-      return []
+  | data => traverse [(namingContext, messageContext, data)]
+where
+  /-- Visit one worklist of sibling messages iteratively, preserving left-to-right order. -/
+  traverse (work : List (NamingContext × Option MessageDataContext × MessageData)) :
+      IO (List AutomationEvent) := do
+    let mut stack := work
+    let mut events : List AutomationEvent := []
+    while !stack.isEmpty do
+      match stack with
+      | [] => pure ()
+      | head :: tail =>
+        stack := tail
+        let namingContext := head.1
+        let messageContextAndNode := head.2
+        let messageContext := messageContextAndNode.1
+        let node := messageContextAndNode.2
+        match node with
+        | .compose left right =>
+            stack := (namingContext, messageContext, left) ::
+              (namingContext, messageContext, right) :: stack
+        | .withContext ctx data =>
+            stack := (namingContext, some ctx, data) :: stack
+        | .withNamingContext ctx data =>
+            stack := (ctx, messageContext, data) :: stack
+        | .nest _ data | .group data | .tagged _ data | .ofWidget _ data =>
+            stack := (namingContext, messageContext, data) :: stack
+        | .ofLazy render _ => do
+            let dynamic ← render (messageContext.map (MessageData.mkPPContext namingContext))
+            if let some data := dynamic.get? MessageData then
+              stack := (namingContext, messageContext, data) :: stack
+        | .trace traceData header children => do
+            let message := (← MessageData.formatAux namingContext messageContext header).pretty.trim
+            let childEvents ← traverse <|
+              children.toList.map fun child => (namingContext, messageContext, child)
+            events := { kind := traceData.cls, pos, endPos, message, children := childEvents } :: events
+        | .ofFormatWithInfos _ | .ofGoal _ =>
+            pure ()
+    pure events.reverse
 
 /-- Extract every structured automation event contained in a Lean message. -/
 def AutomationEvent.ofMessage (message : Lean.Message) : IO (List AutomationEvent) :=
