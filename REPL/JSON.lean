@@ -65,14 +65,20 @@ structure Message where
 deriving ToJson, FromJson
 
 /-- Construct the JSON representation of a Lean message. -/
-def Message.of (m : Lean.Message) : IO Message := do pure <|
+def Message.of (m : Lean.Message) : IO Message := do
+  let data := (← m.data.toString).trimAscii.toString
+  -- Existing Kimina clients recognize this warning verbatim when rejecting sorry.
+  let data := if m.severity == .warning && data == "declaration uses `sorry`" then
+      "declaration uses 'sorry'"
+    else data
+  pure <|
   { pos := ⟨m.pos.line, m.pos.column⟩,
     endPos := m.endPos.map fun p => ⟨p.line, p.column⟩,
     severity := match m.severity with
     | .information => .info
     | .warning => .warning
     | .error => .error,
-    data := (← m.data.toString).trim }
+    data }
 
 /-- One structured event emitted by an enabled Lean automation trace. -/
 structure AutomationEvent where
@@ -119,17 +125,22 @@ where
             stack := (namingContext, some ctx, data) :: stack
         | .withNamingContext ctx data =>
             stack := (ctx, messageContext, data) :: stack
-        | .nest _ data | .group data | .tagged _ data | .ofWidget _ data =>
+        | .nest _ data | .group data | .tagged _ data | .ofWidget _ data
+          | .ofOriginatingSyntax _ data =>
             stack := (namingContext, messageContext, data) :: stack
         | .ofLazy render _ => do
             let dynamic ← render (messageContext.map (MessageData.mkPPContext namingContext))
             if let some data := dynamic.get? MessageData then
               stack := (namingContext, messageContext, data) :: stack
         | .trace traceData header children => do
-            let message := (← MessageData.formatAux namingContext messageContext header).pretty.trim
-            let childEvents ← traverse <|
-              children.toList.map fun child => (namingContext, messageContext, child)
-            events := { kind := traceData.cls, pos, endPos, message, children := childEvents } :: events
+            if traceData.cls.isAnonymous then
+              -- Lean 4.33 groups traces at a position in a synthetic root node.
+              stack := children.toList.map (fun child => (namingContext, messageContext, child)) ++ stack
+            else
+              let message := (← MessageData.formatAux namingContext messageContext header).pretty.trim
+              let childEvents ← traverse <|
+                children.toList.map fun child => (namingContext, messageContext, child)
+              events := { kind := traceData.cls, pos, endPos, message, children := childEvents } :: events
         | .ofFormatWithInfos _ | .ofGoal _ =>
             pure ()
     pure events.reverse
