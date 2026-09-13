@@ -146,20 +146,41 @@ def tacticSequences (trees : List InfoTree) : M m (List REPL.TacticSequence) :=
       endPos := ⟨endPos.line, endPos.column⟩
       tactics }
 
-/-- Serialize source ranges for term- and tactic-level `calc` blocks. -/
-def calcBlocks (trees : List InfoTree) : List REPL.CalcBlock :=
-  trees.flatMap InfoTree.calcBlocks |>.map fun block =>
+/-- Serialize calc boundaries and checked targets without exporting the full infotree. -/
+def calcBlocks (trees : List InfoTree) : M m (List REPL.CalcBlock) := do
+  let proofInfos := trees.flatMap fun tree => tree.findAllInfo none fun
+    | .ofTermInfo info => info.expectedType?.isSome
+    | .ofTacticInfo info => !info.goalsBefore.isEmpty
+    | _ => false
+  trees.flatMap InfoTree.calcBlocks |>.mapM fun block => do
     let (pos, endPos) := stxRange block.ctx.fileMap block.stx
     let ownerRange := block.owner?.map fun owner => stxRange block.ctx.fileMap owner
-    let steps := block.steps.map fun step =>
+    let steps ← block.steps.mapM fun step => do
       let (stepPos, stepEndPos) := stxRange block.ctx.fileMap step.stx
       let proofRange := step.proof?.map fun proof => stxRange block.ctx.fileMap proof
-      {
+      -- Match the proof's AST span to Lean's checked record. The outermost
+      -- record gives its expected type even when elaboration adds wrappers.
+      let target? ← match step.proof? with
+        | none => pure none
+        | some proof => do
+          let proofInfo? := proofInfos.find? fun (info, _) =>
+            match info.stx? with
+            | some stx => stx.getPos? == proof.getPos? && stx.getTailPos? == proof.getTailPos?
+            | none => false
+          match proofInfo? with
+          | some (.ofTermInfo info, some ctx) =>
+            info.expectedType?.mapM fun target => do
+              return (← ctx.ppExpr info.lctx target).pretty
+          | some (.ofTacticInfo info, some ctx) => do
+            pure <| some (← info.formatMainGoal ctx).pretty
+          | _ => pure none
+      return {
         pos := ⟨stepPos.line, stepPos.column⟩
         endPos := ⟨stepEndPos.line, stepEndPos.column⟩
         proofPos := proofRange.map fun range => ⟨range.1.line, range.1.column⟩
-        proofEndPos := proofRange.map fun range => ⟨range.2.line, range.2.column⟩ }
-    {
+        proofEndPos := proofRange.map fun range => ⟨range.2.line, range.2.column⟩
+        target? }
+    return {
       name := block.stx.getKind
       pos := ⟨pos.line, pos.column⟩
       endPos := ⟨endPos.line, endPos.column⟩
@@ -258,9 +279,9 @@ def runCommand (s : Command) : M IO (CommandResponse ⊕ Error) := do
   let tacticSequences ← match s.tacticSequences with
   | some true => tacticSequences trees
   | _ => pure []
-  let calcBlocks := match s.tacticSequences with
+  let calcBlocks ← match s.tacticSequences with
   | some true => calcBlocks trees
-  | _ => []
+  | _ => pure []
   let cmdSnapshot :=
   { cmdState
     cmdContext := (cmdSnapshot?.map fun c => c.cmdContext).getD

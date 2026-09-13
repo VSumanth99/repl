@@ -225,6 +225,8 @@ structure CalcStep where
   endPos : Pos
   proofPos : Option Pos
   proofEndPos : Option Pos
+  /-- Lean's checked relation, absent for bare expressions or unelaborated proofs. -/
+  target? : Option String := none
 deriving ToJson, FromJson
 
 /-- Source ranges for a `calc` block and the tactic that owns it, if any. -/
