@@ -125,6 +125,33 @@ def tactics (trees : List InfoTree) : M m (List Tactic) :=
       let proofStateId ← proofState.mapM recordProofSnapshot
       return Tactic.of goals tactic pos endPos proofStateId ns
 
+/-- Export fields directly from Lean instead of parsing the formatted goal block.
+Use the same name sanitization and visibility rules as `ppGoal`, but always render
+local definition values so that pretty-printer elision cannot look like a change. -/
+def goalStates (goals : List MVarId) : MetaM (List GoalState) :=
+  goals.mapM fun goal => do
+    let decl ← goal.getDecl
+    let options ← getOptions
+    let lctx := decl.lctx.sanitizeNames.run' { options }
+    Meta.withLCtx lctx decl.localInstances do
+      let locals ← lctx.foldlM (init := #[]) fun locals localDecl => do
+        if (!Meta.pp.auxDecls.get options && localDecl.isAuxDecl) ||
+            (!Meta.pp.implementationDetailHyps.get options && localDecl.isImplementationDetail) then
+          return locals
+        let type ← Meta.ppExpr (← instantiateMVars localDecl.type)
+        let value ← localDecl.value?.mapM fun value => do
+          return (← Meta.ppExpr (← instantiateMVars value)).pretty
+        return locals.push {
+          id := localDecl.fvarId.name.toString
+          name := (format localDecl.userName.simpMacroScopes).pretty
+          type := type.pretty
+          value }
+      return {
+        id := goal.name.toString
+        name := (format decl.userName.eraseMacroScopes).pretty
+        target := (← Meta.ppExpr (← instantiateMVars decl.type)).pretty
+        locals := locals.toList }
+
 /-- Serialize source-level tactic sequences and their before/after proof states. -/
 def tacticSequences (trees : List InfoTree) : M m (List REPL.TacticSequence) :=
   trees.flatMap InfoTree.tacticSequences |>.mapM fun sequence => do
@@ -137,6 +164,8 @@ def tacticSequences (trees : List InfoTree) : M m (List REPL.TacticSequence) :=
         endPos := ⟨tacticEndPos.line, tacticEndPos.column⟩
         goalsBefore := (← tactic.info.goalState tactic.ctx).map Format.pretty
         goalsAfter := (← tactic.info.goalStateAfter tactic.ctx).map Format.pretty
+        goalStatesBefore := ← tactic.info.runMetaMGoalsBefore tactic.ctx goalStates
+        goalStatesAfter := ← tactic.info.runMetaMGoalsAfter tactic.ctx goalStates
         tactic := Format.pretty (← tactic.info.pp tactic.ctx)
         mayFail := tactic.mayFail }
     return {
