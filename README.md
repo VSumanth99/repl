@@ -85,6 +85,27 @@ results in output
  "env": 0}
  ```
 
+## Structured goals in tactic sequences
+
+Send `"tacticSequences": true` with a command to include checked source-level
+`tacticSequences`. Each tactic has `goalStatesBefore` and `goalStatesAfter`:
+
+```json
+{"id": "_uniq.42", "name": "left", "target": "P", "locals": [
+  {"id": "_uniq.12", "name": "P", "type": "Prop"},
+  {"id": "_uniq.15", "name": "«two words»", "type": "P"}
+]}
+```
+
+These IDs come from Lean's metavariables and free variables and are meaningful
+only within the same elaboration. Surviving IDs follow goals through reordering;
+replaced goals and reintroduced locals can have new IDs. A local definition also
+has a `value`, rendered even when the goal printer hides let values. Auxiliary and
+implementation-detail locals follow Lean's visibility options. Types, values, and
+targets are separately rendered text under the saved before/after contexts, not
+serialized expressions. The legacy `goalsBefore` and `goalsAfter` text is preserved.
+This export does not require returning the full infotree.
+
 ## Tactic mode (experimental)
 
 To enter tactic mode issue a command containing a `sorry`,

@@ -199,6 +199,24 @@ def Tactic.of (goals tactic : String) (pos endPos : Lean.Position) (proofState :
     proofState,
     usedConstants }
 
+/-- A visible local declaration. IDs identify Lean free variables, not printed names. -/
+structure GoalLocal where
+  id : String
+  name : String
+  type : String
+  /-- Present for local definitions; proof hypotheses have no value. -/
+  value : Option String
+  deriving ToJson, FromJson
+
+/-- A checked goal, rendered under its own saved metavariable and local contexts.
+IDs are meaningful within one elaboration; they are not stable across requests. -/
+structure GoalState where
+  id : String
+  name : String
+  target : String
+  locals : List GoalLocal
+  deriving ToJson, FromJson
+
 /-- One tactic in a source-level tactic sequence. -/
 structure TacticSequenceEntry where
   name : Option Name
@@ -206,6 +224,8 @@ structure TacticSequenceEntry where
   endPos : Pos
   goalsBefore : List String
   goalsAfter : List String
+  goalStatesBefore : List GoalState
+  goalStatesAfter : List GoalState
   tactic : String
   mayFail : Bool
 deriving ToJson, FromJson
