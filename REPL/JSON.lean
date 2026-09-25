@@ -219,11 +219,13 @@ structure GoalState where
 
 /-- One tactic in a source-level tactic sequence. -/
 structure TacticSequenceEntry where
+  executionId : Nat
+  ownerId : Option Nat
+  /-- One-based stage order within the owning execution. -/
+  stageIndex : Option Nat
   name : Option Name
   pos : Pos
   endPos : Pos
-  goalsBefore : List String
-  goalsAfter : List String
   goalStatesBefore : List GoalState
   goalStatesAfter : List GoalState
   tactic : String
