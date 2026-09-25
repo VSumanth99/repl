@@ -153,27 +153,41 @@ def goalStates (goals : List MVarId) : MetaM (List GoalState) :=
         locals := locals.toList }
 
 /-- Serialize source-level tactic sequences and their before/after proof states. -/
-def tacticSequences (trees : List InfoTree) : M m (List REPL.TacticSequence) :=
-  trees.flatMap InfoTree.tacticSequences |>.mapM fun sequence => do
+def tacticSequences (trees : List InfoTree) : M m (List REPL.TacticSequence) := do
+  let mut sequences := #[]
+  let mut stageCounts : Std.HashMap Nat Nat := {}
+  for sequence in InfoTree.tacticSequences trees do
     let (pos, endPos) := stxRange sequence.ctx.fileMap sequence.stx
-    let tactics ← sequence.tactics.mapM fun tactic => do
+    let mut tactics := #[]
+    for tactic in sequence.tactics do
       let (tacticPos, tacticEndPos) := tactic.info.range tactic.ctx
-      return {
+      -- Number observations in their traversal order, including repeated rules.
+      let mut stageIndex := none
+      if let some ownerId := tactic.ownerId then
+        let index := (stageCounts.get? ownerId).getD 0 + 1
+        stageCounts := stageCounts.insert ownerId index
+        stageIndex := some index
+      let source ← if tactic.ownerId.isSome then
+        pure (tactic.info.stx.reprint.getD "").trim
+      else pure (Format.pretty (← tactic.info.pp tactic.ctx))
+      tactics := tactics.push {
+        executionId := tactic.executionId
+        ownerId := tactic.ownerId
+        stageIndex
         name := tactic.info.name?
         pos := ⟨tacticPos.line, tacticPos.column⟩
         endPos := ⟨tacticEndPos.line, tacticEndPos.column⟩
-        goalsBefore := (← tactic.info.goalState tactic.ctx).map Format.pretty
-        goalsAfter := (← tactic.info.goalStateAfter tactic.ctx).map Format.pretty
         goalStatesBefore := ← tactic.info.runMetaMGoalsBefore tactic.ctx goalStates
         goalStatesAfter := ← tactic.info.runMetaMGoalsAfter tactic.ctx goalStates
-        tactic := Format.pretty (← tactic.info.pp tactic.ctx)
+        tactic := source
         mayFail := tactic.mayFail }
-    return {
+    sequences := sequences.push {
       name := sequence.stx.getKind
       synthetic := match sequence.stx.getHeadInfo with | .original .. => false | _ => true
       pos := ⟨pos.line, pos.column⟩
       endPos := ⟨endPos.line, endPos.column⟩
-      tactics }
+      tactics := tactics.toList }
+  return sequences.toList
 
 /-- Serialize calc boundaries and checked targets without exporting the full infotree. -/
 def calcBlocks (trees : List InfoTree) : M m (List REPL.CalcBlock) := do

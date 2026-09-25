@@ -230,6 +230,10 @@ def tactics (t : InfoTree) : List (ContextInfo × Syntax × List MVarId × Posit
 
 /-- One source tactic discovered while reconstructing a tactic sequence. -/
 structure TacticSequenceNode where
+  /-- Unique within this check, even when the same source executes repeatedly. -/
+  executionId : Nat
+  /-- A checked stage belongs to this specific enclosing execution. -/
+  ownerId : Option Nat := none
   ctx : ContextInfo
   info : TacticInfo
   /-- Whether a surrounding combinator permits this tactic to fail. -/
@@ -293,20 +297,52 @@ This follows the traversal used by mathlib's
 retain each sequence container's syntax range.
 -/
 private partial def collectTacticSequences
-    (tree : InfoTree) (ctx? : Option ContextInfo) : TacticSequenceVisitResult :=
+    (tree : InfoTree) (ctx? : Option ContextInfo)
+    (rewriteRules : Array (Syntax × Nat) := #[]) : StateM Nat TacticSequenceVisitResult := do
   match tree with
   | .context ctx tree =>
-    collectTacticSequences tree (ctx.mergeIntoOuter? ctx?)
+    collectTacticSequences tree (ctx.mergeIntoOuter? ctx?) rewriteRules
   | .hole _ =>
-    {}
+    return {}
   | .node info children =>
-    let childResults := children.toList.map fun child => collectTacticSequences child ctx?
+    let executionId ← modifyGet fun next => (next, next + 1)
+    -- Remember the execution that owns each multi-rule list before visiting
+    -- its children. Source positions identify rules, never their executions.
+    let rewriteRules := match info, info.stx? with
+      | .ofTacticInfo _, some stx =>
+        match stx.getHeadInfo? with
+        | some (.original ..) => stx.getArgs.foldl (fun rules arg =>
+            if arg.isOfKind ``Lean.Parser.Tactic.rwRuleSeq && arg[1].getArgs.size > 2 then
+              rules ++ (arg[1].getArgs.filter (·.isOfKind ``Lean.Parser.Tactic.rwRule)).map
+                (fun rule => (rule, executionId))
+            else rules) rewriteRules
+        | _ => rewriteRules
+      | _, _ => rewriteRules
+    let childResults ← children.toList.mapM fun child =>
+      collectTacticSequences child ctx? rewriteRules
     let childTactics := childResults.filterMap (fun result => result.tactic?)
     let childSequences := childResults.flatMap (fun result => result.sequences)
     match info.stx?, ctx? with
     | some stx, some ctx =>
       let kind := stx.getKind
-      if isTacticSequenceKind kind then
+      let rule := stx[0]
+      let owner := if kind == nullKind && rule.isOfKind ``Lean.Parser.Tactic.rwRule then
+        rewriteRules.toList.reverse.find? fun (original, _) =>
+          original.getPos? == rule.getPos? && original.getTailPos? == rule.getTailPos?
+        else none
+      if let some (_, ownerId) := owner then
+        match info with
+        | .ofTacticInfo tacticInfo =>
+          -- Lean annotates [rule, comma]. Keep the original rule's range.
+          let tactic : TacticSequenceNode := {
+            executionId := executionId
+            ownerId := some ownerId
+            ctx := ctx
+            info := { tacticInfo with stx := rule } }
+          let sequence := { ctx, stx := rule, tactics := [tactic] : TacticSequence }
+          return { sequences := childSequences ++ [sequence] }
+        | _ => return { sequences := childSequences }
+      else if isTacticSequenceKind kind then
         let sequences :=
           if childTactics.isEmpty && kind == ``Lean.Parser.Term.byTactic then
             match childSequences.reverse with
@@ -314,31 +350,29 @@ private partial def collectTacticSequences
             | sequence :: preceding => preceding.reverse ++ [{ sequence with ctx, stx }]
           else if childTactics.isEmpty then childSequences
           else childSequences ++ [{ ctx, stx, tactics := childTactics }]
-        { sequences }
+        return { sequences }
       else
         match stx.getHeadInfo? with
         | some (.original ..) =>
           if isTacticPunctuationKind kind then
-            { sequences := childSequences }
+            return { sequences := childSequences }
           else if kind == ``Lean.Parser.Tactic.withAnnotateState then
-            { tactic? := childTactics.head?, sequences := childSequences }
+            return { tactic? := childTactics.head?, sequences := childSequences }
           else
             match info with
             | .ofTacticInfo tacticInfo =>
               let sequences :=
                 if allowsChildFailure kind then childSequences.map markSequenceMayFail
                 else childSequences
-              { tactic? := some { ctx, info := tacticInfo }, sequences }
-            | _ =>
-              { sequences := childSequences }
-        | _ =>
-          { sequences := childSequences }
-    | _, _ =>
-      { sequences := childSequences }
+              return { tactic? := some { executionId, ctx, info := tacticInfo }, sequences }
+            | _ => return { sequences := childSequences }
+        | _ => return { sequences := childSequences }
+    | _, _ => return { sequences := childSequences }
 
-/-- Return all source-level tactic sequences contained in an infotree. -/
-def tacticSequences (tree : InfoTree) : List TacticSequence :=
-  (collectTacticSequences tree none).sequences
+/-- Number executions across every tree in one response, preserving stage ownership. -/
+def tacticSequences (trees : List InfoTree) : List TacticSequence :=
+  ((trees.mapM fun tree => do
+    return (← collectTacticSequences tree none).sequences).run' 0).flatten
 
 private def unpackCalcSteps (steps : TSyntax ``Lean.calcSteps) : Option (List CalcStep) :=
   match steps with
