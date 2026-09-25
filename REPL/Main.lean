@@ -131,13 +131,18 @@ def tacticSequences (trees : List InfoTree) : M m (List REPL.TacticSequence) :=
     let (pos, endPos) := stxRange sequence.ctx.fileMap sequence.stx
     let tactics ← sequence.tactics.mapM fun tactic => do
       let (tacticPos, tacticEndPos) := tactic.info.range tactic.ctx
+      -- A rewrite rule is term syntax, so the tactic pretty-printer cannot
+      -- render it. Its original source is available on the syntax node.
+      let source ← if tactic.info.stx.isOfKind ``Lean.Parser.Tactic.rwRule then
+        pure (tactic.info.stx.reprint.getD "").trimAscii.toString
+      else pure (Format.pretty (← tactic.info.pp tactic.ctx))
       return {
         name := tactic.info.name?
         pos := ⟨tacticPos.line, tacticPos.column⟩
         endPos := ⟨tacticEndPos.line, tacticEndPos.column⟩
         goalsBefore := (← tactic.info.goalState tactic.ctx).map Format.pretty
         goalsAfter := (← tactic.info.goalStateAfter tactic.ctx).map Format.pretty
-        tactic := Format.pretty (← tactic.info.pp tactic.ctx)
+        tactic := source
         mayFail := tactic.mayFail }
     return {
       name := sequence.stx.getKind

@@ -299,20 +299,43 @@ This follows the traversal used by mathlib's
 retain each sequence container's syntax range.
 -/
 private partial def collectTacticSequences
-    (tree : InfoTree) (ctx? : Option ContextInfo) : TacticSequenceVisitResult :=
+    (tree : InfoTree) (ctx? : Option ContextInfo)
+    (rewriteRules : Array Syntax := #[]) : TacticSequenceVisitResult :=
   match tree with
   | .context ctx tree =>
-    collectTacticSequences tree (ctx.mergeIntoOuter? ctx?)
+    collectTacticSequences tree (ctx.mergeIntoOuter? ctx?) rewriteRules
   | .hole _ =>
     {}
   | .node info children =>
-    let childResults := children.toList.map fun child => collectTacticSequences child ctx?
+    -- Multi-rule lists already have checked per-rule TacticInfo nodes. Track
+    -- their original syntax through macro wrappers; single-rule lists need no
+    -- extra detail. This uses parser structure, not a list of tactic names.
+    let rewriteRules := match info.stx? with
+      | some stx => stx.getArgs.foldl (fun rules arg =>
+          if arg.isOfKind ``Lean.Parser.Tactic.rwRuleSeq && arg[1].getArgs.size > 2 then
+            rules ++ arg[1].getArgs.filter (·.isOfKind ``Lean.Parser.Tactic.rwRule)
+          else rules) rewriteRules
+      | none => rewriteRules
+    let childResults := children.toList.map fun child =>
+      collectTacticSequences child ctx? rewriteRules
     let childTactics := childResults.filterMap (fun result => result.tactic?)
     let childSequences := childResults.flatMap (fun result => result.sequences)
     match info.stx?, ctx? with
     | some stx, some ctx =>
       let kind := stx.getKind
-      if isTacticSequenceKind kind then
+      let rule := stx[0]
+      if info.isOriginal && kind == nullKind && rule.isOfKind ``Lean.Parser.Tactic.rwRule &&
+          rewriteRules.any (fun original =>
+            original.getPos? == rule.getPos? && original.getTailPos? == rule.getTailPos?) then
+        match info with
+        | .ofTacticInfo tacticInfo =>
+          -- Lean annotates [rule, comma]. Export the rule's AST range exactly
+          -- so consumers can attach it without guessing punctuation offsets.
+          let tactic := { ctx, info := { tacticInfo with stx := rule } : TacticSequenceNode }
+          let sequence := { ctx, stx := rule, tactics := [tactic] : TacticSequence }
+          { sequences := childSequences ++ [sequence] }
+        | _ => { sequences := childSequences }
+      else if isTacticSequenceKind kind then
         let sequences :=
           if childTactics.isEmpty && kind == ``Lean.Parser.Term.byTactic then
             match childSequences.reverse with
